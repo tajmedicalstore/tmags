@@ -1,0 +1,123 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function isAdmin() {
+      return signedIn() && request.auth.token.email == 'farhanalipervez@gmail.com';
+    }
+    function owns(uid) { return signedIn() && request.auth.uid == uid; }
+
+    // Main website content, including the main catalogue's non-product content.
+    // Only the configured owner/admin can publish edits.
+    match /siteData/main {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // One shared inventory source for index.html and catalogues/shop.html.
+    // Visitors can read published product/settings data; only admin can edit it.
+    match /tms_store/{docId} {
+      allow read: if docId in ['products', 'settings'];
+      allow read: if docId == 'stockAlerts' && isAdmin();
+      allow create, update: if isAdmin() && (
+        docId != 'products' ||
+        (request.resource.data.list is list && request.resource.data.list.size() <= 500)
+      );
+      allow delete: if isAdmin();
+    }
+
+    // Private restock requests: customers can create and view only their own.
+    // The store admin can review and update requests; requests are no longer
+    // stored in a publicly-readable array containing phone numbers.
+    match /tms_stockAlerts/{alertId} {
+      allow create: if signedIn()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.productId is string
+        && request.resource.data.productName is string
+        && request.resource.data.phone is string
+        && request.resource.data.phone.size() <= 40
+        && request.resource.data.status == 'pending';
+      allow read: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // One-to-one customer support only. No customer group chat.
+    match /conversations/{visitorId} {
+      allow read, create, update: if signedIn() && (request.auth.uid == visitorId || isAdmin());
+      allow delete: if isAdmin();
+      match /messages/{messageId} {
+        allow read: if signedIn() && (request.auth.uid == visitorId || isAdmin());
+        allow create: if signedIn() && (
+          (request.auth.uid == visitorId && request.resource.data.sender == 'customer') ||
+          (isAdmin() && request.resource.data.sender == 'admin')
+        );
+        allow update: if isAdmin() || (signedIn() && request.auth.uid == visitorId
+          && request.resource.data.sender == resource.data.sender
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['deletedFor','reactions','deliveredAt','readAt']));
+        allow delete: if isAdmin();
+      }
+    }
+    match /chatGroups/{groupId} { allow read, write: if false; }
+
+    match /tms_orders/{orderId} {
+      allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.name is string && request.resource.data.name.size() <= 120
+        && request.resource.data.phone is string && request.resource.data.phone.size() <= 40;
+      allow read: if isAdmin() || (signedIn() && resource.data.ownerUid == request.auth.uid);
+      allow update: if isAdmin() || (signedIn() && resource.data.ownerUid == request.auth.uid
+        && request.resource.data.ownerUid == resource.data.ownerUid
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read']));
+      allow delete: if isAdmin();
+    }
+
+    match /tms_customer_accounts/{uid} {
+      allow create: if owns(uid);
+      allow read, update: if isAdmin() || owns(uid);
+      allow delete: if isAdmin();
+    }
+    match /tms_threads/{threadId} {
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+      allow read, update: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
+      allow delete: if isAdmin();
+    }
+    match /users/{uid} {
+      allow read: if owns(uid) || isAdmin();
+      allow create: if owns(uid) && (request.resource.data.role == 'customer' || (isAdmin() && request.resource.data.role == 'admin'));
+      allow update: if isAdmin() || (owns(uid) && request.resource.data.role == resource.data.role);
+      allow delete: if isAdmin();
+    }
+    match /reviews/{reviewId} {
+      allow read: if resource.data.status == 'approved' || isAdmin();
+      allow create: if signedIn() && request.resource.data.status == 'pending'
+        && request.resource.data.rating is int && request.resource.data.rating >= 1 && request.resource.data.rating <= 5
+        && request.resource.data.text is string && request.resource.data.text.size() > 0 && request.resource.data.text.size() <= 2000;
+      allow update, delete: if isAdmin();
+    }
+    match /aiChats/{uid} {
+      allow read: if isAdmin() || owns(uid);
+      allow create, update: if owns(uid);
+      allow delete: if isAdmin();
+      match /messages/{messageId} {
+        allow read: if isAdmin() || owns(uid);
+        allow create: if owns(uid);
+        allow update, delete: if isAdmin();
+      }
+    }
+    match /activityLogs/{entryId} {
+      allow read: if isAdmin();
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if isAdmin();
+    }
+    match /prescriptionRequests/{requestId} {
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+      allow read: if isAdmin() || (signedIn() && resource.data.uid == request.auth.uid);
+      allow update, delete: if isAdmin();
+    }
+    match /securityLog/{entryId} {
+      allow read, create: if isAdmin();
+      allow update, delete: if false;
+    }
+  }
+}
